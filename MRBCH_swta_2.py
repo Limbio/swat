@@ -138,7 +138,6 @@ def heuristic_algorithm(sensors, weapons, targets):
     # 计算总效益/总消耗
     effectiveness_cost_ratio = total_effectiveness / total_cost if total_cost > 0 else 0
 
-
     # 打印结果
     print("传感器分配:", sensor_assignments)
     print("武器分配:", weapon_assignments)
@@ -151,7 +150,7 @@ def heuristic_algorithm(sensors, weapons, targets):
 if __name__ == "__main__":
     sensor_number = 15
     weapon_number = 15
-    target_number = 15
+    target_number = 10
     sensors, weapons, targets = advanced_data_generator(sensor_number, weapon_number, target_number)
 
     sensor_assignments, weapon_assignments, threat_all, total_time = heuristic_algorithm(sensors, weapons, targets)

@@ -105,30 +105,34 @@ def heuristic_algorithm(sensors, weapons, targets):
         AT = np.delete(AT, ind, 0)
 
     # 计算目标函数值
-    threat_all = sum(targets[k].life * (1 - Pm[k]) * (1 - Qm[k]) for k in range(t))
-
+    effectiveness = sum(targets[k].life * (1 - Pm[k]) * (1 - Qm[k]) for k in range(t))
+    all_cost = 0
+    # effectiveness = 0
     end_time = time.time()
     # 初始化传感器和武器分配列表
     sensor_assignments = [-1] * len(sensors)  # 用 -1 初始化表示未分配
     weapon_assignments = [-1] * len(weapons)
 
-    for sensor_idx, weapon_idx, target_idx in assign:
+    for i in range(len(targets)):
+        sensor_idx, weapon_idx, target_idx = assign[i]
+        all_cost += sensors[sensor_idx].cost + weapons[weapon_idx].cost
         sensor_assignments[sensor_idx] = target_idx
         weapon_assignments[weapon_idx] = target_idx
-    total_time = end_time - start_time
 
+    total_time = end_time - start_time
+    obj = effectiveness / all_cost
     # 打印结果
     print("传感器分配:", sensor_assignments)
     print("武器分配:", weapon_assignments)
     print("平均运行时间：", total_time)
     # print("分配方案:", assignments)
-    print("平均效用:", threat_all)
-    return sensor_assignments, weapon_assignments, threat_all, total_time
+    print("平均效用:", obj)
+    return sensor_assignments, weapon_assignments, obj, total_time
 
 
 if __name__ == "__main__":
-    sensor_number = 10
-    weapon_number = 10
+    sensor_number = 15
+    weapon_number = 15
     target_number = 10
     sensors, weapons, targets = advanced_data_generator(sensor_number, weapon_number, target_number)
 

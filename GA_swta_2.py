@@ -37,7 +37,7 @@ class GeneticAlgorithmSolver:
             effectiveness = detection_probability * kill_probability * target.life
             total_effectiveness += effectiveness
             total_cost += sensor.cost + weapon.cost
-
+        print("effectiveness:", total_effectiveness, "total_cost:", total_cost)
         # 使用效用与成本之比作为适应度
         return total_effectiveness / (total_cost)
 

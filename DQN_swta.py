@@ -80,6 +80,7 @@ class MTADQNEnvironment:
         sensor_idx = action // (self.n_weapons * self.n_targets)
         weapon_idx = (action % (self.n_weapons * self.n_targets)) // self.n_targets
         target_idx = action % self.n_targets
+        # print("sensor",sensor_idx,"weapon",weapon_idx,"target",target_idx)
 
         # 确保动作有效
         if not self.is_action_valid(sensor_idx, weapon_idx, target_idx):
