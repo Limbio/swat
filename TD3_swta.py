@@ -5,7 +5,7 @@ import torch.nn as nn
 import torch.optim as optim
 import copy
 from collections import deque
-from swta_data_generator_2 import  advanced_data_generator
+from swta_data_generator_2 import advanced_data_generator
 
 
 # Actor Network
@@ -32,11 +32,14 @@ class Critic(nn.Module):
         self.fc3 = nn.Linear(300, 1)
 
     def forward(self, state, action):
+        # print(f"State shape: {state.shape}, Action shape: {action.shape}")
         x = torch.cat([state, action], 1)
+        # print(f"Merged shape: {x.shape}")
         x = torch.relu(self.fc1(x))
         x = torch.relu(self.fc2(x))
         value = self.fc3(x)
         return value
+
 
 class MTATD3Environment:
     def __init__(self, sensors, weapons, targets):
@@ -87,8 +90,10 @@ class MTATD3Environment:
 
     def step(self, action):
         # 更新决策矩阵并实时更新可用动作
+        # print(f"Action: {action}, Current State: {self.state}")
+        ...
         sensor_idx, weapon_idx, target_idx = self.decode_action(action)
-        print("sensor",sensor_idx,"weapon",weapon_idx,"target",target_idx)
+        # print("sensor",sensor_idx,"weapon",weapon_idx,"target",target_idx)
         if not self.is_action_valid(sensor_idx, weapon_idx, target_idx):
             print("无效动作")
             return self.state, -1, self.is_done()  # 无效动作返回负奖励
@@ -98,6 +103,7 @@ class MTATD3Environment:
         self.weapon_allocation[weapon_idx, target_idx] = 1
         self.available_actions = [act for act in self.available_actions if not self.is_involved(act, action)]
         new = self.calculate_objective()
+        # print(f"Old Objective: {old}, New Objective: {new}")
         # reward = self.calculate_reward(sensor_idx, weapon_idx, target_idx)
         reward = new - old
         done = self.is_done()
@@ -181,6 +187,15 @@ class TD3Agent:
         self.policy_freq = 2
         self.total_it = 0
 
+    def one_hot_encode_action(self, action_indices):
+        """
+        将动作索引转换为独热编码的形式。
+        """
+        one_hot_actions = torch.zeros(len(action_indices), self.output_dim)
+        for i, index in enumerate(action_indices):
+            one_hot_actions[i, index] = 1
+        return one_hot_actions
+
     def select_action(self, state, available_actions):
         state_tensor = torch.tensor(state, dtype=torch.float).unsqueeze(0)
 
@@ -189,6 +204,8 @@ class TD3Agent:
 
         # 根据可用的动作调整概率
         adjusted_probs = [action_probs[i] if i in available_actions else 0 for i in range(self.output_dim)]
+
+        # print(f"Action Probabilities: {action_probs}")
 
         # 确保概率为非负值并且和为1
         adjusted_probs = np.clip(adjusted_probs, a_min=0, a_max=None)
@@ -201,33 +218,52 @@ class TD3Agent:
 
         # 根据概率选择一个动作
         action = np.random.choice(self.output_dim, p=adjusted_probs)
+
+        # print(f"Selected Action: {action}")
+
         return action
 
     def train(self, replay_buffer, batch_size=100, gamma=0.99, tau=0.005):
         self.total_it += 1
 
-        # Sample a batch of transitions from replay buffer:
+        # Sample a batch of transitions from replay buffer
         state, action, next_state, reward, done = replay_buffer.sample(batch_size)
-        print(f"Sampled states shape: {state.shape}, next_states shape: {next_state.shape}")
-        state = torch.FloatTensor(state)
-        action = torch.FloatTensor(action)
-        next_state = torch.FloatTensor(next_state)
-        reward = torch.FloatTensor(reward)
-        done = torch.FloatTensor(1 - done)
+        state = torch.FloatTensor(state).view(batch_size, -1)
+        action = torch.FloatTensor(action).view(batch_size, -1)
+        next_state = torch.FloatTensor(next_state).view(batch_size, -1)
+        reward = torch.FloatTensor(reward).unsqueeze(1)
+        done = torch.FloatTensor(done).unsqueeze(1)
 
-        # Select action according to policy and add clipped noise
+        # Convert actions to one-hot encoding
+        action_indices = action.long().squeeze(-1)
+        one_hot_actions = self.one_hot_encode_action(action_indices)
+
         noise = (torch.randn_like(action) * self.policy_noise).clamp(-self.noise_clip, self.noise_clip)
-        next_action = (self.actor_target(next_state) + noise).clamp(-1, 1)
+        next_action_probs = self.actor_target(next_state)
+        next_action_indices = next_action_probs.max(1)[1]
+        next_one_hot_actions = self.one_hot_encode_action(next_action_indices)
+
+        # Print the shape of next_one_hot_actions for debugging
+        # print(f"Shape of next_one_hot_actions: {next_one_hot_actions.shape}")
+
+        # Ensure that the dimensions of noise match the last two dimensions of next_one_hot_actions
+        # Assuming next_one_hot_actions is 2D, adjust the reshape and expand logic
+        # This part might need modification based on the actual shape of next_one_hot_actions
+        batch_size, num_actions = next_one_hot_actions.shape
+        noise = noise.view(batch_size, 1).expand(-1, num_actions)
+
+        # Apply noise to next actions
+        next_one_hot_actions = torch.clamp(next_one_hot_actions + noise, 0, 1)
 
         # Compute the target Q value
-        target_Q1 = self.critic_target_1(next_state, next_action)
-        target_Q2 = self.critic_target_2(next_state, next_action)
+        target_Q1 = self.critic_target_1(next_state, next_one_hot_actions)
+        target_Q2 = self.critic_target_2(next_state, next_one_hot_actions)
         target_Q = torch.min(target_Q1, target_Q2)
         target_Q = reward + ((1 - done) * gamma * target_Q).detach()
 
         # Get current Q estimates
-        current_Q1 = self.critic_1(state, action)
-        current_Q2 = self.critic_2(state, action)
+        current_Q1 = self.critic_1(state, one_hot_actions)
+        current_Q2 = self.critic_2(state, one_hot_actions)
 
         # Compute critic loss
         critic_loss_1 = nn.MSELoss()(current_Q1, target_Q)
@@ -271,7 +307,7 @@ class ReplayBuffer:
         self.ptr = 0
 
     def add(self, state, action, reward, next_state, done):
-        print(f"Adding state: {np.array(state).shape}, next_state: {np.array(next_state).shape}")
+        # print(f"Adding to ReplayBuffer: State shape: {np.array(state).shape}, Action shape: {np.array(action).shape}")
         data = (state, action, reward, next_state, done)
         if len(self.storage) == self.max_size:
             self.storage[int(self.ptr)] = data
@@ -293,8 +329,14 @@ class ReplayBuffer:
             rewards.append(r)
             next_states.append(s_)
             dones.append(d)
-        print(f"Sampled states shape: {np.array(states).shape}, next_states shape: {np.array(next_states).shape}")
-        return np.array(states), np.array(actions), np.array(rewards), np.array(next_states), np.array(dones)
+
+        # 确保 next_states 的形状是正确的
+        # next_states = np.array(next_states)
+        # if next_states.ndim == 1:
+        #     next_states = np.expand_dims(next_states, axis=0)
+        # print( f"Sampled from ReplayBuffer: State shape: {np.array(states).shape}, next state shape: {np.array(next_states).shape}")
+
+        return np.array(states), np.array(actions),  np.array(next_states), np.array(rewards), np.array(dones)
 
 
 # 训练函数
@@ -302,6 +344,7 @@ def train_td3(env, agent, replay_buffer, num_episodes, batch_size, gamma, tau, p
     for episode in range(num_episodes):
         state = env.reset()
         episode_reward = 0
+        # print(f"Starting Episode {episode}")
 
         while not env.is_done():
             action = agent.select_action(state, env.available_actions)
@@ -314,6 +357,7 @@ def train_td3(env, agent, replay_buffer, num_episodes, batch_size, gamma, tau, p
                 agent.train(replay_buffer, batch_size, gamma, tau)
 
         print(f"Episode {episode}: Total Reward = {episode_reward}")
+
 
 # 主函数
 if __name__ == "__main__":

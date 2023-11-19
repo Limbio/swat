@@ -1,6 +1,6 @@
 import numpy as np
 import random
-from swta_data_generator import advanced_data_generator
+from swta_data_generator_2 import advanced_data_generator
 import time
 
 

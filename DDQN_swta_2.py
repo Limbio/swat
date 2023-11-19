@@ -7,10 +7,11 @@ import matplotlib.pyplot as plt
 import time
 from collections import deque
 from swta_data_generator_2 import advanced_data_generator
-# from skopt import BayesSearchCV
-# from skopt.space import Real, Categorical, Integer
-# from skopt.utils import use_named_args
-# from skopt import gp_minimize
+from skopt import BayesSearchCV
+from skopt.space import Real, Categorical, Integer
+from skopt.utils import use_named_args
+from skopt import gp_minimize
+
 
 # 内存回放类
 class ReplayMemory:
@@ -159,14 +160,20 @@ class MTADQNEnvironment:
 class DQN(nn.Module):
     def __init__(self, input_size, output_size):
         super(DQN, self).__init__()
-        self.fc1 = nn.Linear(input_size, 128)
-        self.fc2 = nn.Linear(128, 128)
-        self.fc3 = nn.Linear(128, output_size)
+        # 增加层数和每层的神经元数量
+        self.fc1 = nn.Linear(input_size, 256)
+        self.fc2 = nn.Linear(256, 256)
+        self.fc3 = nn.Linear(256, 128)
+        self.fc4 = nn.Linear(128, 128)
+        self.fc5 = nn.Linear(128, output_size)
 
     def forward(self, x):
         x = torch.relu(self.fc1(x))
         x = torch.relu(self.fc2(x))
-        return self.fc3(x)
+        x = torch.relu(self.fc3(x))
+        x = torch.relu(self.fc4(x))
+        return self.fc5(x)
+
 
 
 # DQN 代理
@@ -176,7 +183,7 @@ class DQNAgent:
         self.action_size = action_size
         self.model = DQN(state_size, action_size)
         self.target_model = DQN(state_size, action_size)
-        self.optimizer = optim.Adam(self.model.parameters(), lr=0.001)
+        self.optimizer = optim.Adam(self.model.parameters(), lr=0.0023)
         self.update_target()
 
     def update_target(self):
@@ -266,47 +273,47 @@ def train(env, agent, num_episodes, batch_size, gamma, epsilon_start, epsilon_en
     return total_rewards, average_losses
 
 
-# Define the search space of hyperparameters
-# search_space = [
-#     Real(1e-6, 1e-2, "log-uniform", name='learning_rate'),
-#     Integer(32, 256, name='batch_size'),
-#     Real(0.90, 0.999, name='gamma'),
-#     Real(0.01, 1.0, name='epsilon_start'),
-#     Real(0.01, 1.0, name='epsilon_end'),
-#     Real(0.90, 1.0, name='epsilon_decay')
-# ]
+#Define the search space of hyperparameters
+search_space = [
+    Real(1e-6, 1e-2, "log-uniform", name='learning_rate'),
+    Integer(32, 256, name='batch_size'),
+    Real(0.90, 0.999, name='gamma'),
+    Real(0.01, 1.0, name='epsilon_start'),
+    Real(0.01, 1.0, name='epsilon_end'),
+    Real(0.90, 1.0, name='epsilon_decay')
+]
 
 
-# Decorate the objective function to automatically convert named parameters
-# @use_named_args(search_space)
-# def objective(learning_rate, batch_size, gamma, epsilon_start, epsilon_end, epsilon_decay):
-#     # Set the hyperparameters of your DQN agent
-#     agent.learning_rate = learning_rate
-#     agent.batch_size = batch_size
-#     agent.gamma = gamma
-#     agent.epsilon_start = epsilon_start
-#     agent.epsilon_end = epsilon_end
-#     agent.epsilon_decay = epsilon_decay
-#
-#     # Train and evaluate the agent
-#     total_rewards, average_losses = train(env, agent, 2000, batch_size,
-#                                           gamma, epsilon_start,
-#                                           epsilon_end, epsilon_decay)
-#
-#     # Return the negative of the average reward (because gp_minimize seeks to minimize the objective)
-#     return -np.mean(total_rewards)
+#Decorate the objective function to automatically convert named parameters
+@use_named_args(search_space)
+def objective(learning_rate, batch_size, gamma, epsilon_start, epsilon_end, epsilon_decay):
+    # Set the hyperparameters of your DQN agent
+    agent.learning_rate = learning_rate
+    agent.batch_size = batch_size
+    agent.gamma = gamma
+    agent.epsilon_start = epsilon_start
+    agent.epsilon_end = epsilon_end
+    agent.epsilon_decay = epsilon_decay
+
+    # Train and evaluate the agent
+    total_rewards, average_losses = train(env, agent, 2000, batch_size,
+                                          gamma, epsilon_start,
+                                          epsilon_end, epsilon_decay)
+
+    # Return the negative of the average reward (because gp_minimize seeks to minimize the objective)
+    return -np.mean(total_rewards)
 
 
-# This function performs the search
-# def search_params(env, agent):
-#     result = gp_minimize(objective, search_space, n_calls=10, random_state=0)
-#
-#     # The result object will contain the information about the optimization
-#     best_hyperparams = result.x
-#     best_score = result.fun
-#
-#     print("Best hyperparameters: {}\nBest score: {}".format(best_hyperparams, best_score))
-#     return best_hyperparams, best_score
+#This function performs the search
+def search_params(env, agent):
+    result = gp_minimize(objective, search_space, n_calls=20, random_state=0)
+
+    # The result object will contain the information about the optimization
+    best_hyperparams = result.x
+    best_score = result.fun
+
+    print("Best hyperparameters: {}\nBest score: {}".format(best_hyperparams, best_score))
+    return best_hyperparams, best_score
 
 
 # 绘制结果
@@ -358,13 +365,14 @@ if __name__ == "__main__":
     # epsilon_start = 0.76
     # epsilon_end = 0.011
     # epsilon_decay = 0.947
-    num_episodes = 2000
+
+    num_episodes = 10000
     batch_size = 128
-    gamma = 0.99
+    gamma = 0.999
     epsilon_start = 1.0
     epsilon_end = 0.01
-    epsilon_decay = 0.95
-
+    epsilon_decay = 0.9
+    #
     total_rewards, average_losses = train(env, agent, num_episodes, batch_size, gamma, epsilon_start,
                                           epsilon_end, epsilon_decay)
     plot_results(total_rewards, average_losses)
