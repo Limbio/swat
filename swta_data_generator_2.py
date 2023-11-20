@@ -91,3 +91,4 @@ if __name__ == "__main__":
         for target in targets:
             kill_probability = min(0.9, max(0.4, weapon.capability / (weapon.capability + target.life)))
             print(f"Weapon {weapon.type} Kill Probability: {kill_probability:.2f}")
+

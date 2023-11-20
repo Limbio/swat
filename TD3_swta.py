@@ -32,9 +32,7 @@ class Critic(nn.Module):
         self.fc3 = nn.Linear(300, 1)
 
     def forward(self, state, action):
-        # print(f"State shape: {state.shape}, Action shape: {action.shape}")
         x = torch.cat([state, action], 1)
-        # print(f"Merged shape: {x.shape}")
         x = torch.relu(self.fc1(x))
         x = torch.relu(self.fc2(x))
         value = self.fc3(x)

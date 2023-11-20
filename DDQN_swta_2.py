@@ -11,7 +11,7 @@ from skopt import BayesSearchCV
 from skopt.space import Real, Categorical, Integer
 from skopt.utils import use_named_args
 from skopt import gp_minimize
-
+from IPython.display import clear_output
 
 # 内存回放类
 class PrioritizedReplayMemory:
@@ -168,7 +168,7 @@ class MTADQNEnvironment:
 
 # DQN 网络
 class DQN(nn.Module):
-    def __init__(self, input_size, output_size, dropout_rate=0.5):
+    def __init__(self, input_size, output_size, dropout_rate):
         super(DQN, self).__init__()
         self.fc1 = nn.Linear(input_size, 256)
         self.dropout1 = nn.Dropout(dropout_rate)
@@ -190,12 +190,13 @@ class DQN(nn.Module):
 
 # DQN 代理
 class DQNAgent:
-    def __init__(self, state_size, action_size):
+    def __init__(self, state_size, action_size, hyperparams):
         self.state_size = state_size
         self.action_size = action_size
-        self.model = DQN(state_size, action_size)
-        self.target_model = DQN(state_size, action_size)
-        self.optimizer = optim.Adam(self.model.parameters(), lr=0.0001)
+        self.hyperparams = hyperparams
+        self.model = DQN(state_size, action_size, hyperparams.dropout_rate)
+        self.target_model = DQN(state_size, action_size, hyperparams.dropout_rate)
+        self.optimizer = optim.Adam(self.model.parameters(), lr=hyperparams.learning_rate)
         self.scheduler = torch.optim.lr_scheduler.StepLR(self.optimizer, step_size=100, gamma=0.9)
 
         self.update_target()
@@ -248,17 +249,20 @@ class DQNAgent:
 
 
 # 训练函数
-def train(env, agent, num_episodes, batch_size, gamma, epsilon_start, epsilon_end, epsilon_decay):
-    epsilon = epsilon_start
+def train(env, agent, params):
+    epsilon = params.epsilon_start
     memory = PrioritizedReplayMemory(10000)
     total_rewards = []
     average_losses = []
+    step_rewards = []  # 每步奖励
+    action_counts = np.zeros(agent.action_size)  # 每个动作的选择次数
 
-    for episode in range(num_episodes):
+    for episode in range(params.num_episodes):
         state = env.reset()
         total_reward = 0
         total_loss = 0
         steps = 0
+        episode_step_rewards = []  # 当前回合的每步奖励
 
         while not env.is_done():
             action = agent.act(state, env.available_actions, epsilon)
@@ -268,10 +272,12 @@ def train(env, agent, num_episodes, batch_size, gamma, epsilon_start, epsilon_en
             transition = (state, action, reward, next_state, done)
             state = next_state
             total_reward += reward
+            episode_step_rewards.append(reward)
+            action_counts[action] += 1
 
-            if len(memory) > batch_size:
-                batch, indices = memory.sample(batch_size)
-                td_errors, loss = agent.learn(batch, gamma)
+            if len(memory) > params.batch_size:
+                batch, indices = memory.sample(params.batch_size)
+                td_errors, loss = agent.learn(batch, params.gamma)
                 total_loss += loss
                 steps += 1
                 # 更新优先级
@@ -281,7 +287,7 @@ def train(env, agent, num_episodes, batch_size, gamma, epsilon_start, epsilon_en
             else:
                 # 如果内存未满，将TD误差设为一个较高的值
                 memory.push(1.0, transition)  # 1.0作为默认TD误差
-            epsilon = max(epsilon_end, epsilon_decay * epsilon)
+            epsilon = max(params.epsilon_end, params.epsilon_decay * epsilon)
 
         # 更新学习率
         agent.scheduler.step()
@@ -289,48 +295,63 @@ def train(env, agent, num_episodes, batch_size, gamma, epsilon_start, epsilon_en
         total_rewards.append(obj)
         average_loss = total_loss / steps if steps > 0 else 0
         average_losses.append(average_loss)
+        step_rewards.append(episode_step_rewards)
 
         if episode % 10 == 0:
             agent.update_target()
+            # plot_metrics(total_rewards,average_losses,action_counts,episode)
             print(f"Episode {episode}, Total Reward: {obj}, Average Loss: {average_loss}")
 
     return total_rewards, average_losses
 
 
-#Define the search space of hyperparameters
+# Define the search space of hyperparameters
 search_space = [
-    Real(1e-6, 1e-2, "log-uniform", name='learning_rate'),
-    Integer(32, 256, name='batch_size'),
-    Real(0.90, 0.999, name='gamma'),
-    Real(0.01, 1.0, name='epsilon_start'),
-    Real(0.01, 1.0, name='epsilon_end'),
-    Real(0.90, 1.0, name='epsilon_decay')
+    Real(1e-6, 1e-2, "log-uniform", name="learning_rate"),
+    Integer(32, 256, name="batch_size"),
+    Real(0.90, 0.999, name="gamma"),
+    Real(0.01, 1.0, name="epsilon_start"),
+    Real(0.01, 1.0, name="epsilon_end"),
+    Real(0.90, 1.0, name="epsilon_decay"),
+    Real(0.1, 0.6, name="dropout_rate"),
+    # 添加其他参数的范围
 ]
 
 
-#Decorate the objective function to automatically convert named parameters
+class HyperParams:
+    def __init__(self):
+        # 初始化所有需要优化的参数
+        self.num_episodes = 10000
+        self.learning_rate = 0.0001
+        self.batch_size = 128
+        self.gamma = 0.99
+        self.epsilon_start = 1.0
+        self.epsilon_end = 0.01
+        self.epsilon_decay = 0.95
+        self.dropout_rate = 0.5
+        # 可以添加更多参数
+
+    def update(self, **kwargs):
+        # 更新参数
+        for key, value in kwargs.items():
+            setattr(self, key, value)
+
+# Decorate the objective function to automatically convert named parameters
 @use_named_args(search_space)
-def objective(learning_rate, batch_size, gamma, epsilon_start, epsilon_end, epsilon_decay):
-    # Set the hyperparameters of your DQN agent
-    agent.learning_rate = learning_rate
-    agent.batch_size = batch_size
-    agent.gamma = gamma
-    agent.epsilon_start = epsilon_start
-    agent.epsilon_end = epsilon_end
-    agent.epsilon_decay = epsilon_decay
-
-    # Train and evaluate the agent
-    total_rewards, average_losses = train(env, agent, 2000, batch_size,
-                                          gamma, epsilon_start,
-                                          epsilon_end, epsilon_decay)
-
-    # Return the negative of the average reward (because gp_minimize seeks to minimize the objective)
+def objective(**params):
+    hyperparams.update(**params)
+    env = MTADQNEnvironment(sensors, weapons, targets)
+    state_size = len(env.get_state())
+    action_size = env.n_sensors * env.n_weapons * env.n_targets
+    agent = DQNAgent(state_size, action_size, hyperparams)
+    # 使用更新的参数训练
+    total_rewards, average_losses = train(env, agent, hyperparams)
     return -np.mean(total_rewards)
 
 
-#This function performs the search
-def search_params(env, agent):
-    result = gp_minimize(objective, search_space, n_calls=20, random_state=0)
+# This function performs the search
+def search_params():
+    result = gp_minimize(objective, search_space, n_calls=10, random_state=0)
 
     # The result object will contain the information about the optimization
     best_hyperparams = result.x
@@ -338,6 +359,23 @@ def search_params(env, agent):
 
     print("Best hyperparameters: {}\nBest score: {}".format(best_hyperparams, best_score))
     return best_hyperparams, best_score
+
+
+# 绘图函数
+def plot_metrics(total_rewards, average_losses, action_counts, episode):
+    clear_output(wait=True)
+    plt.figure(figsize=(12, 4))
+    plt.subplot(131)
+    plt.title(f"Total Rewards at Episode {episode}")
+    plt.plot(total_rewards)
+    plt.subplot(132)
+    plt.title(f"Average Loss at Episode {episode}")
+    plt.plot(average_losses)
+    plt.subplot(133)
+    plt.title(f"Action Counts at Episode {episode}")
+    plt.bar(range(len(action_counts)), action_counts)
+    plt.show()
+# ...在训练循环中每 N 个回合调用 plot_metrics 函数...
 
 
 # 绘制结果
@@ -368,36 +406,22 @@ def plot_results(total_rewards, average_losses):
     plt.tight_layout()
     plt.show()
 
+
 # 主函数
 if __name__ == "__main__":
+
     sensor_number = 15
     weapon_number = 15
     target_number = 10
     sensors, weapons, targets = advanced_data_generator(sensor_number, weapon_number, target_number)
-
+    hyperparams = HyperParams()
     env = MTADQNEnvironment(sensors, weapons, targets)
     state_size = len(env.get_state())
     action_size = env.n_sensors * env.n_weapons * env.n_targets
+    agent = DQNAgent(state_size, action_size,hyperparams)
 
-    agent = DQNAgent(state_size, action_size)
+    # search_params()
 
-    # search_params(env, agent)
-
-    # num_episodes = 10000
-    # batch_size = 162
-    # gamma = 0.953
-    # epsilon_start = 0.76
-    # epsilon_end = 0.011
-    # epsilon_decay = 0.947
-
-    num_episodes = 20000
-    batch_size = 128
-    gamma = 0.999
-    epsilon_start = 1.0
-    epsilon_end = 0.01
-    epsilon_decay = 0.95
-    #
-    total_rewards, average_losses = train(env, agent, num_episodes, batch_size, gamma, epsilon_start,
-                                          epsilon_end, epsilon_decay)
+    total_rewards, average_losses = train(env, agent, hyperparams)
     plot_results(total_rewards, average_losses)
 

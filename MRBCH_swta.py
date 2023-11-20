@@ -1,6 +1,6 @@
 import numpy as np
 import random
-from swta_data_generator_2 import advanced_data_generator
+from swta_data_generator import advanced_data_generator
 import time
 
 
@@ -125,14 +125,15 @@ def heuristic_algorithm(sensors, weapons, targets):
     print("传感器分配:", sensor_assignments)
     print("武器分配:", weapon_assignments)
     print("平均运行时间：", total_time)
+    print("效率：", effectiveness)
     # print("分配方案:", assignments)
-    print("平均效用:", obj)
+    # print("平均效用:", obj)
     return sensor_assignments, weapon_assignments, obj, total_time
 
 
 if __name__ == "__main__":
-    sensor_number = 15
-    weapon_number = 15
+    sensor_number = 10
+    weapon_number = 10
     target_number = 10
     sensors, weapons, targets = advanced_data_generator(sensor_number, weapon_number, target_number)
 
