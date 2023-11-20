@@ -1,6 +1,7 @@
 import random
 import pickle
 import time
+import numpy as np
 from swta_data_generator_2 import  advanced_data_generator
 
 
@@ -37,9 +38,9 @@ class GeneticAlgorithmSolver:
             effectiveness = detection_probability * kill_probability * target.life
             total_effectiveness += effectiveness
             total_cost += sensor.cost + weapon.cost
-        print("effectiveness:", total_effectiveness, "total_cost:", total_cost)
+        # print("effectiveness:", total_effectiveness, "total_cost:", total_cost)
         # 使用效用与成本之比作为适应度
-        return total_effectiveness / (total_cost)
+        return total_effectiveness / total_cost
 
     def select(self, population, fitnesses):
         epsilon = 1e-8
@@ -80,6 +81,7 @@ class GeneticAlgorithmSolver:
 
     def evolve(self):
         population = self.create_initial_population()
+        average_fitness = []
         for generation in range(self.generations):
             fitnesses = [self.fitness(individual) for individual in population]
             selected = self.select(population, fitnesses)
@@ -90,7 +92,11 @@ class GeneticAlgorithmSolver:
                 offspring.append(self.mutate(child1))
                 offspring.append(self.mutate(child2))
             population = offspring
-            print(f"Generation {generation}: Best Fitness = {max(fitnesses)}")
+            average_fitness.append(max(fitnesses))
+            if generation % 10 == 0:
+                print(f"Generation {generation}: Best Fitness = {max(fitnesses)} "
+                      f"average_fitness = {np.mean(average_fitness[-10:])}")
+
         best_fitness = max(fitnesses)
         best_individual = population[fitnesses.index(best_fitness)]
         return best_individual, best_fitness
@@ -134,7 +140,6 @@ def optimize_parameters(sensors, weapons, targets, population_sizes, mutation_ra
     return best_config
 
 
-
 # 测试模型
 def test_model(sensors, weapons, targets, best_individual, num_runs):
     total_time = 0
@@ -156,7 +161,8 @@ if __name__ == "__main__":
     target_number = 10
     # 假设 sensors, weapons, targets 是预先定义好的
     sensors, weapons, targets = advanced_data_generator(sensor_number,weapon_number,target_number)
-    ga_solver = GeneticAlgorithmSolver(sensors, weapons, targets, population_size=300, mutation_rate=0.1, generations=2000)
+    ga_solver = GeneticAlgorithmSolver(sensors, weapons, targets,
+                                       population_size=300, mutation_rate=0.1, generations=5000)
     best_individual, best_fitness = ga_solver.evolve()
     print("最佳个体:", best_individual)
     print("最佳个体的适应度:", best_fitness)

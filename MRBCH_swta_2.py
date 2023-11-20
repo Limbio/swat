@@ -43,7 +43,6 @@ def heuristic_algorithm(sensors, weapons, targets):
     for k in range(t):
         U1[k] = targets[k].life * (1 - Pm[k]) * (1 - Qm[k])
 
-
     num_a = 1
     while AT.size > 0:
         state_at = np.zeros(AT.shape[0], dtype=int)
@@ -81,7 +80,7 @@ def heuristic_algorithm(sensors, weapons, targets):
                 Ptr[il, kl] = Pm[kl]
                 Qtr[jl, kl] = Qm[kl]
 
-            U2[l] = targets[kl].life * (1 - Ptr[il, kl]) * (1 - Qtr[jl, kl])
+            U2[l] = targets[kl].life * (1 - Ptr[il, kl]) * (1 - Qtr[jl, kl]) / (sensors[il].cost + weapons[jl].cost)
             Delta[l] = U2[l] - U1[kl]
 
         # 找到具有最大边际回报的元组
@@ -106,45 +105,29 @@ def heuristic_algorithm(sensors, weapons, targets):
         AT = np.delete(AT, ind, 0)
 
     # 计算目标函数值
-    threat_all = sum(targets[k].life * (1 - Pm[k]) * (1 - Qm[k]) for k in range(t))
-
+    effectiveness = sum(targets[k].life * (1 - Pm[k]) * (1 - Qm[k]) for k in range(t))
+    all_cost = 0
+    # effectiveness = 0
     end_time = time.time()
-
-    total_effectiveness = 0
-    total_cost = 0
-
     # 初始化传感器和武器分配列表
     sensor_assignments = [-1] * len(sensors)  # 用 -1 初始化表示未分配
     weapon_assignments = [-1] * len(weapons)
 
-    total_time = end_time - start_time
-
-    for sensor_idx, weapon_idx, target_idx in assign:
-        sensor = sensors[sensor_idx]
-        weapon = weapons[weapon_idx]
-        target = targets[target_idx]
+    for i in range(len(targets)):
+        sensor_idx, weapon_idx, target_idx = assign[i]
+        all_cost += sensors[sensor_idx].cost + weapons[weapon_idx].cost
         sensor_assignments[sensor_idx] = target_idx
         weapon_assignments[weapon_idx] = target_idx
 
-        # 计算效益和消耗
-        detection_probability = sensor.capability / (sensor.capability + target.life)
-        kill_probability = weapon.capability / (weapon.capability + target.life)
-        effectiveness = detection_probability * kill_probability * target.life
-        cost = sensor.cost + weapon.cost
-
-        total_effectiveness += effectiveness
-        total_cost += cost
-
-    # 计算总效益/总消耗
-    effectiveness_cost_ratio = total_effectiveness / total_cost if total_cost > 0 else 0
-
+    total_time = end_time - start_time
+    obj = effectiveness / all_cost
     # 打印结果
     print("传感器分配:", sensor_assignments)
     print("武器分配:", weapon_assignments)
     print("平均运行时间：", total_time)
     # print("分配方案:", assignments)
-    print("效益/消耗比:", effectiveness_cost_ratio)
-    return sensor_assignments, weapon_assignments, threat_all, total_time
+    print("平均效用:", obj)
+    return sensor_assignments, weapon_assignments, obj, total_time
 
 
 if __name__ == "__main__":

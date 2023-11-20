@@ -14,19 +14,29 @@ from skopt import gp_minimize
 
 
 # 内存回放类
-class ReplayMemory:
+class PrioritizedReplayMemory:
     def __init__(self, capacity):
         self.memory = deque(maxlen=capacity)
         self.priorities = deque(maxlen=capacity)
 
-    def push(self, state, action, reward, next_state, done):
-        self.memory.append((state, action, reward, next_state, done))
-        self.priorities.append(abs(reward) + 1e-5)  # 确保所有经验都有非零权重
+    def push(self, error, transition):
+        self.memory.append(transition)
+        # 确保错误（优先级）值是浮点数
+        self.priorities.append(float(error + 1e-5))
 
     def sample(self, batch_size):
-        probabilities = np.array(self.priorities) / sum(self.priorities)
-        indices = np.random.choice(range(len(self.memory)), size=batch_size, p=probabilities)
-        return [self.memory[idx] for idx in indices]
+        if self.memory:
+            probabilities = np.array(list(self.priorities), dtype=np.float64) / sum(self.priorities)
+            indices = np.random.choice(len(self.memory), size=batch_size, p=probabilities)
+            samples = [self.memory[idx] for idx in indices]
+            return samples, indices
+        else:
+            return [], []
+
+    def update_priorities(self, indices, errors):
+        for idx, error in zip(indices, errors):
+            # 确保错误（优先级）值是浮点数
+            self.priorities[idx] = float(error + 1e-5)
 
     def __len__(self):
         return len(self.memory)
@@ -106,7 +116,6 @@ class MTADQNEnvironment:
         target_idx = action % self.n_targets
         return sensor_idx, weapon_idx, target_idx
 
-
     def is_involved(self, action, executed_action):
         sensor_idx, weapon_idx, target_idx = self.decode_action(action)
         executed_sensor_idx, executed_weapon_idx, executed_target_idx = self.decode_action(executed_action)
@@ -156,24 +165,27 @@ class MTADQNEnvironment:
         total_effectiveness = (effectiveness / cost) if cost != 0 else 0
         return total_effectiveness
 
+
 # DQN 网络
 class DQN(nn.Module):
-    def __init__(self, input_size, output_size):
+    def __init__(self, input_size, output_size, dropout_rate=0.5):
         super(DQN, self).__init__()
-        # 增加层数和每层的神经元数量
         self.fc1 = nn.Linear(input_size, 256)
+        self.dropout1 = nn.Dropout(dropout_rate)
         self.fc2 = nn.Linear(256, 256)
+        self.dropout2 = nn.Dropout(dropout_rate)
         self.fc3 = nn.Linear(256, 128)
+        self.dropout3 = nn.Dropout(dropout_rate)
         self.fc4 = nn.Linear(128, 128)
+        self.dropout4 = nn.Dropout(dropout_rate)
         self.fc5 = nn.Linear(128, output_size)
 
     def forward(self, x):
-        x = torch.relu(self.fc1(x))
-        x = torch.relu(self.fc2(x))
-        x = torch.relu(self.fc3(x))
-        x = torch.relu(self.fc4(x))
+        x = torch.relu(self.dropout1(self.fc1(x)))
+        x = torch.relu(self.dropout2(self.fc2(x)))
+        x = torch.relu(self.dropout3(self.fc3(x)))
+        x = torch.relu(self.dropout4(self.fc4(x)))
         return self.fc5(x)
-
 
 
 # DQN 代理
@@ -183,7 +195,9 @@ class DQNAgent:
         self.action_size = action_size
         self.model = DQN(state_size, action_size)
         self.target_model = DQN(state_size, action_size)
-        self.optimizer = optim.Adam(self.model.parameters(), lr=0.0023)
+        self.optimizer = optim.Adam(self.model.parameters(), lr=0.0001)
+        self.scheduler = torch.optim.lr_scheduler.StepLR(self.optimizer, step_size=100, gamma=0.9)
+
         self.update_target()
 
     def update_target(self):
@@ -223,18 +237,20 @@ class DQNAgent:
         Q_targets = rewards + (gamma * Q_targets_next * (1 - dones))
         Q_expected = self.model(states).gather(1, actions)
 
+        td_errors = torch.abs(Q_targets - Q_expected).detach().cpu().numpy()
+
         loss = nn.MSELoss()(Q_expected, Q_targets)
         self.optimizer.zero_grad()
         loss.backward()
         self.optimizer.step()
 
-        return loss.item()
+        return td_errors, loss.item()
 
 
 # 训练函数
 def train(env, agent, num_episodes, batch_size, gamma, epsilon_start, epsilon_end, epsilon_decay):
     epsilon = epsilon_start
-    memory = ReplayMemory(10000)
+    memory = PrioritizedReplayMemory(10000)
     total_rewards = []
     average_losses = []
 
@@ -249,18 +265,26 @@ def train(env, agent, num_episodes, batch_size, gamma, epsilon_start, epsilon_en
             if action is None or env.is_done():  # 如果没有合法动作或环境结束
                 break  # 跳出循环
             next_state, reward, done = env.step(action)
-            memory.push(state, action, reward, next_state, done)
+            transition = (state, action, reward, next_state, done)
             state = next_state
             total_reward += reward
 
             if len(memory) > batch_size:
-                batch = memory.sample(batch_size)
-                loss = agent.learn(batch, gamma)
+                batch, indices = memory.sample(batch_size)
+                td_errors, loss = agent.learn(batch, gamma)
                 total_loss += loss
                 steps += 1
-
+                # 更新优先级
+                memory.update_priorities(indices, td_errors)
+                # 保存新的转换到内存，TD误差设为最大值确保被选中
+                memory.push(max(td_errors), transition)
+            else:
+                # 如果内存未满，将TD误差设为一个较高的值
+                memory.push(1.0, transition)  # 1.0作为默认TD误差
             epsilon = max(epsilon_end, epsilon_decay * epsilon)
 
+        # 更新学习率
+        agent.scheduler.step()
         obj = env.calculate_objective()
         total_rewards.append(obj)
         average_loss = total_loss / steps if steps > 0 else 0
@@ -366,12 +390,12 @@ if __name__ == "__main__":
     # epsilon_end = 0.011
     # epsilon_decay = 0.947
 
-    num_episodes = 10000
+    num_episodes = 20000
     batch_size = 128
     gamma = 0.999
     epsilon_start = 1.0
     epsilon_end = 0.01
-    epsilon_decay = 0.9
+    epsilon_decay = 0.95
     #
     total_rewards, average_losses = train(env, agent, num_episodes, batch_size, gamma, epsilon_start,
                                           epsilon_end, epsilon_decay)

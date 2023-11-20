@@ -214,7 +214,8 @@ class TD3Agent:
             adjusted_probs /= total_prob
         else:
             # 如果所有可用动作的概率和为0，则均匀分配概率
-            adjusted_probs = np.array([1.0 / len(available_actions) if i in available_actions else 0 for i in range(self.output_dim)])
+            adjusted_probs = np.array(
+                [1.0 / len(available_actions) if i in available_actions else 0 for i in range(self.output_dim)])
 
         # 根据概率选择一个动作
         action = np.random.choice(self.output_dim, p=adjusted_probs)
@@ -223,14 +224,48 @@ class TD3Agent:
 
         return action
 
-    def train(self, replay_buffer, batch_size=100, gamma=0.99, tau=0.005):
-        self.total_it += 1
+    def compute_td_error(self, state, action, reward, next_state, done, gamma):
+        # 将数据转换为Tensor，假设输入的action是一个整数索引
+        state_tensor = torch.FloatTensor([state])
+        action_tensor = torch.LongTensor([[action]])
+        next_state_tensor = torch.FloatTensor([next_state])
+        reward_tensor = torch.FloatTensor([[reward]])
+        done_tensor = torch.FloatTensor([[float(done)]])
 
+        # 对动作进行独热编码
+        one_hot_action = torch.zeros(1, self.output_dim)
+        one_hot_action[0, action] = 1
+
+        # 获取当前状态的Q值估计
+        current_Q1 = self.critic_1(state_tensor, one_hot_action)
+        current_Q2 = self.critic_2(state_tensor, one_hot_action)
+
+        # 使用目标网络预测下一状态的Q值
+        next_action_probs = self.actor_target(next_state_tensor)
+        next_action_indices = next_action_probs.max(1)[1]
+        next_one_hot_actions = torch.zeros(1, self.output_dim)
+        next_one_hot_actions[0, next_action_indices.item()] = 1
+
+        target_Q1 = self.critic_target_1(next_state_tensor, next_one_hot_actions)
+        target_Q2 = self.critic_target_2(next_state_tensor, next_one_hot_actions)
+        target_Q = reward_tensor + gamma * (1 - done_tensor) * torch.min(target_Q1, target_Q2)
+
+        # 计算TD误差
+        td_error = torch.abs(target_Q - torch.min(current_Q1, current_Q2)).item()
+
+        return td_error
+
+    def train(self, state, action, next_state, reward, done, batch_size=100, gamma=0.99, tau=0.005):
+        self.total_it += 1
+        # print(f"States shape: {state.shape}")
+        # print(f"Actions shape: {action.shape}")
+        # print(f"Rewards shape: {reward.shape}")
+        # print(f"Next states shape: {next_state.shape}")
+        # print(f"Dones shape: {done.shape}")
         # Sample a batch of transitions from replay buffer
-        state, action, next_state, reward, done = replay_buffer.sample(batch_size)
-        state = torch.FloatTensor(state).view(batch_size, -1)
-        action = torch.FloatTensor(action).view(batch_size, -1)
-        next_state = torch.FloatTensor(next_state).view(batch_size, -1)
+        state = torch.FloatTensor(state)
+        action = torch.FloatTensor(action)
+        next_state = torch.FloatTensor(next_state)
         reward = torch.FloatTensor(reward).unsqueeze(1)
         done = torch.FloatTensor(done).unsqueeze(1)
 
@@ -240,9 +275,10 @@ class TD3Agent:
 
         noise = (torch.randn_like(action) * self.policy_noise).clamp(-self.noise_clip, self.noise_clip)
         next_action_probs = self.actor_target(next_state)
+        # print(f"next_action_probs shape: {next_action_probs.shape}")  # 打印形状进行检查
+
         next_action_indices = next_action_probs.max(1)[1]
         next_one_hot_actions = self.one_hot_encode_action(next_action_indices)
-
         # Print the shape of next_one_hot_actions for debugging
         # print(f"Shape of next_one_hot_actions: {next_one_hot_actions.shape}")
 
@@ -278,6 +314,10 @@ class TD3Agent:
         critic_loss_2.backward()
         self.critic_optimizer_2.step()
 
+        new_errors = abs(reward + gamma * ((1 - done) * torch.min(target_Q1, target_Q2)).detach() - torch.min(current_Q1, current_Q2)).squeeze().tolist()
+
+        avg_critic_loss = (critic_loss_1.item() + critic_loss_2.item()) / 2
+
         # Delayed policy updates
         if self.total_it % self.policy_freq == 0:
             # Compute actor loss
@@ -297,46 +337,46 @@ class TD3Agent:
 
             for param, target_param in zip(self.actor.parameters(), self.actor_target.parameters()):
                 target_param.data.copy_(tau * param.data + (1 - tau) * target_param.data)
+        return new_errors, avg_critic_loss
 
 
 # Replay Buffer
-class ReplayBuffer:
+class PrioritizedReplayBuffer:
     def __init__(self, max_size):
         self.storage = []
+        self.priorities = []
         self.max_size = max_size
         self.ptr = 0
 
-    def add(self, state, action, reward, next_state, done):
-        # print(f"Adding to ReplayBuffer: State shape: {np.array(state).shape}, Action shape: {np.array(action).shape}")
-        data = (state, action, reward, next_state, done)
-        if len(self.storage) == self.max_size:
-            self.storage[int(self.ptr)] = data
-            self.ptr = (self.ptr + 1) % self.max_size
-        else:
-            self.storage.append(data)
-
-    def __len__(self):
-        return len(self.storage)
+    def add(self, state, action, reward, next_state, done, error):
+        # 当存储满时，覆盖旧数据
+        if len(self.storage) < self.max_size:
+            self.storage.append(None)
+            self.priorities.append(None)
+        self.storage[self.ptr] = (state, action, reward, next_state, done)
+        self.priorities[self.ptr] = error
+        self.ptr = (self.ptr + 1) % self.max_size
 
     def sample(self, batch_size):
-        ind = np.random.randint(0, len(self.storage), batch_size)
+        probabilities = np.array(self.priorities) / sum(self.priorities)
         states, actions, rewards, next_states, dones = [], [], [], [], []
-
-        for i in ind:
+        indices = np.random.choice(range(len(self.storage)), size=batch_size, p=probabilities)
+        for i in indices:
             s, a, r, s_, d = self.storage[i]
             states.append(s)
             actions.append(a)
             rewards.append(r)
             next_states.append(s_)
             dones.append(d)
+        # states, actions, rewards, next_states, dones = zip(*[self.storage[idx] for idx in indices])
+        return np.array(states), np.array(actions), np.array(rewards), np.array(next_states), np.array(dones), indices
 
-        # 确保 next_states 的形状是正确的
-        # next_states = np.array(next_states)
-        # if next_states.ndim == 1:
-        #     next_states = np.expand_dims(next_states, axis=0)
-        # print( f"Sampled from ReplayBuffer: State shape: {np.array(states).shape}, next state shape: {np.array(next_states).shape}")
+    def update_priorities(self, indices, errors):
+        for idx, error in zip(indices, errors):
+            self.priorities[idx] = error
 
-        return np.array(states), np.array(actions),  np.array(next_states), np.array(rewards), np.array(dones)
+    def __len__(self):
+        return len(self.storage)
 
 
 # 训练函数
@@ -344,19 +384,36 @@ def train_td3(env, agent, replay_buffer, num_episodes, batch_size, gamma, tau, p
     for episode in range(num_episodes):
         state = env.reset()
         episode_reward = 0
-        # print(f"Starting Episode {episode}")
+        step_count = 0
+        episode_loss = 0
 
         while not env.is_done():
             action = agent.select_action(state, env.available_actions)
             next_state, reward, done = env.step(action)
-            replay_buffer.add(state, action, reward, next_state, done)
+
+            # 计算TD_error
+            td_error = agent.compute_td_error(state, action, reward, next_state, done, gamma)
+
+            # 添加新转换和TD错误到回放池中
+            replay_buffer.add(state, action, reward, next_state, done, td_error)
             state = next_state
             episode_reward += reward
 
+            # 当有足够的数据时进行训练
             if len(replay_buffer) > batch_size:
-                agent.train(replay_buffer, batch_size, gamma, tau)
+                # 从回放池中采样
+                sample_states, sample_actions, sample_rewards, sample_next_states, sample_dones,\
+                sample_indices = replay_buffer.sample(batch_size)
+                new_errors, loss = agent.train(sample_states, sample_actions, sample_next_states, sample_rewards,
+                                         sample_dones, gamma, tau)
+                episode_loss += loss
+                step_count += 1
+                # 更新优先级
+                replay_buffer.update_priorities(sample_indices, new_errors)
 
-        print(f"Episode {episode}: Total Reward = {episode_reward}")
+        if episode % 10 == 0:
+            avg_loss = episode_loss / step_count if step_count > 0 else 0
+            print(f"Episode {episode}: Total Reward = {episode_reward}, Average Loss = {avg_loss}")
 
 
 # 主函数
@@ -370,8 +427,8 @@ if __name__ == "__main__":
     state_size = 3 * env.n_sensors + 3 * env.n_weapons + env.n_targets
     action_size = env.n_sensors * env.n_weapons * env.n_targets
     agent = TD3Agent(state_size, action_size)
-    replay_buffer = ReplayBuffer(10000)
-    num_episodes = 1000
+    replay_buffer = PrioritizedReplayBuffer(10000)
+    num_episodes = 2000
     batch_size = 100
     gamma = 0.99  # 折扣因子
     tau = 0.005  # 目标网络软更新参数
