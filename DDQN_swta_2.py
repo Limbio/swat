@@ -331,7 +331,6 @@ def train(env, agent, params):
     return total_rewards, average_losses
 
 
-
 # Define the search space of hyperparameters
 search_space = [
     Real(1e-6, 1e-2, "log-uniform", name="learning_rate"),

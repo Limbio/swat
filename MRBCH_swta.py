@@ -132,9 +132,9 @@ def heuristic_algorithm(sensors, weapons, targets):
 
 
 if __name__ == "__main__":
-    sensor_number = 10
-    weapon_number = 10
-    target_number = 10
+    sensor_number = 5
+    weapon_number = 5
+    target_number = 5
     sensors, weapons, targets = advanced_data_generator(sensor_number, weapon_number, target_number)
 
     sensor_assignments, weapon_assignments, threat_all, total_time = heuristic_algorithm(sensors, weapons, targets)

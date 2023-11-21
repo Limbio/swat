@@ -150,9 +150,9 @@ def test_model(sensors, weapons, targets, best_individual, num_runs):
 
 if __name__ == "__main__":
 
-    sensor_number = 10
-    weapon_number = 10
-    target_number = 10
+    sensor_number = 5
+    weapon_number = 5
+    target_number = 5
     sensors, weapons, targets = advanced_data_generator(sensor_number, weapon_number, target_number)
     ga_solver = GeneticAlgorithmSolver(sensors, weapons, targets, population_size=100, mutation_rate=0.1,
                                        generations=5000)
