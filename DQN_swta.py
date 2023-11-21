@@ -292,7 +292,7 @@ def train(env, agent, num_episodes, batch_size=128, gamma=0.99, epsilon_start=1.
         if episode % 10 == 0:
             agent.update_target()
 
-        print(f"Episode {episode}, Total Reward: {total_reward}, Average Loss: {average_loss}")
+        print(f"Episode {episode}, Total Reward: {total_reward}, Average Loss: {average_loss}, Epsilon:{epsilon}")
 
     plot_training_results(total_rewards, average_losses)
 

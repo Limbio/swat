@@ -13,6 +13,7 @@ from skopt.utils import use_named_args
 from skopt import gp_minimize
 from IPython.display import clear_output
 
+
 # 内存回放类
 class PrioritizedReplayMemory:
     def __init__(self, capacity):
@@ -198,30 +199,52 @@ class DQNAgent:
         self.target_model = DQN(state_size, action_size, hyperparams.dropout_rate)
         self.optimizer = optim.Adam(self.model.parameters(), lr=hyperparams.learning_rate)
         self.scheduler = torch.optim.lr_scheduler.StepLR(self.optimizer, step_size=100, gamma=0.9)
+        self.strategy = hyperparams.strategy
+        self.action_count = np.zeros(action_size)  # 记录每个动作被选择的次数
+        self.total_steps = 0  # 记录总步数
+        self.ucb_c = hyperparams.ucb_c  # UCB探索参数
+        self.softmax_temp = hyperparams.softmax_temp  # Softmax温度参数
 
         self.update_target()
 
     def update_target(self):
         self.target_model.load_state_dict(self.model.state_dict())
 
-    def act(self, state, available_actions, epsilon=0):
-        if random.random() < epsilon or not available_actions:
-            return random.choice(available_actions)
-        else:
-            state = torch.from_numpy(state).float().unsqueeze(0)
-            self.model.eval()
-            with torch.no_grad():
-                action_values = self.model(state)
-            self.model.train()
+    def select_action(self, state, available_actions, epsilon):
+        state_tensor = torch.from_numpy(state).float().unsqueeze(0)
+        self.model.eval()
+        with torch.no_grad():
+            action_values = self.model(state_tensor)
+        self.model.train()
+        action = 0
 
-            # 从可用的动作中选择具有最高预测值的动作
-            action_values = action_values.cpu().data.numpy().squeeze()
-            # 创建一个包含所有动作的默认列表并赋予极低的值
-            full_action_values = np.full(self.action_size, -np.inf)
-            # 仅更新可用动作的值
-            for action in available_actions:
-                full_action_values[action] = action_values[action]
-            return np.argmax(full_action_values)
+        action_values_filtered = {action: action_values[action] for action in available_actions if
+                                  action < len(action_values)}
+
+        if self.strategy == 'random':
+            if random.random() < epsilon or not available_actions:
+                action = random.choice(available_actions)
+            else:
+                # 从可用的动作中选择具有最高预测值的动作
+                action_values = action_values.data.numpy().squeeze()
+                # 创建一个包含所有动作的默认列表并赋予极低的值
+                full_action_values = np.full(self.action_size, -np.inf)
+                # 仅更新可用动作的值
+                for action in available_actions:
+                    full_action_values[action] = action_values[action]
+                action = np.argmax(full_action_values)
+        elif self.strategy == 'ucb':
+            ucb_values = {action: action_values[action] + self.ucb_c * np.sqrt(
+            np.log(self.total_steps + 1) / (self.action_count[action] + 1)) for action in available_actions}
+            action = max(ucb_values, key=ucb_values.get)
+        elif self.strategy == 'softmax':
+            exp_values = np.exp(np.array(list(action_values_filtered.values())) / self.softmax_temp)
+            probabilities = exp_values / np.sum(exp_values)
+            action = np.random.choice(list(action_values_filtered.keys()), p=probabilities)
+
+        self.action_count[action] += 1
+        self.total_steps += 1
+        return action
 
     def learn(self, batch, gamma):
         states, actions, rewards, next_states, dones = zip(*batch)
@@ -247,6 +270,12 @@ class DQNAgent:
 
         return td_errors, loss.item()
 
+    def save_checkpoint(self, filename="dqn_checkpoint.pth"):
+        torch.save(self.model.state_dict(), filename)
+
+    def load_checkpoint(self, filename="dqn_checkpoint.pth"):
+        self.model.load_state_dict(torch.load(filename))
+
 
 # 训练函数
 def train(env, agent, params):
@@ -254,55 +283,53 @@ def train(env, agent, params):
     memory = PrioritizedReplayMemory(10000)
     total_rewards = []
     average_losses = []
-    step_rewards = []  # 每步奖励
-    action_counts = np.zeros(agent.action_size)  # 每个动作的选择次数
+    warmup_period = 500  # 预热期长度
 
     for episode in range(params.num_episodes):
         state = env.reset()
         total_reward = 0
         total_loss = 0
         steps = 0
-        episode_step_rewards = []  # 当前回合的每步奖励
 
         while not env.is_done():
-            action = agent.act(state, env.available_actions, epsilon)
-            if action is None or env.is_done():  # 如果没有合法动作或环境结束
-                break  # 跳出循环
+            # 在预热期内，使用全随机策略
+            if episode < warmup_period:
+                action = random.choice(env.available_actions)
+            else:
+                action = agent.select_action(state, env.available_actions, epsilon)
+
             next_state, reward, done = env.step(action)
             transition = (state, action, reward, next_state, done)
             state = next_state
             total_reward += reward
-            episode_step_rewards.append(reward)
-            action_counts[action] += 1
+            # 将经验添加到回放缓存
+            memory.push(1.0, transition)  # TD误差初始化为1.0
 
-            if len(memory) > params.batch_size:
+            # 仅在预热期之后添加经验到回放缓存
+            if episode >= warmup_period and len(memory) > params.batch_size:
                 batch, indices = memory.sample(params.batch_size)
                 td_errors, loss = agent.learn(batch, params.gamma)
                 total_loss += loss
                 steps += 1
-                # 更新优先级
                 memory.update_priorities(indices, td_errors)
-                # 保存新的转换到内存，TD误差设为最大值确保被选中
                 memory.push(max(td_errors), transition)
-            else:
-                # 如果内存未满，将TD误差设为一个较高的值
-                memory.push(1.0, transition)  # 1.0作为默认TD误差
-            epsilon = max(params.epsilon_end, params.epsilon_decay * epsilon)
 
-        # 更新学习率
-        agent.scheduler.step()
+        # 在预热期之后才更新探索率和学习率
+        if episode >= warmup_period:
+            epsilon = max(params.epsilon_end, params.epsilon_decay * epsilon)
+            agent.scheduler.step()
+
         obj = env.calculate_objective()
         total_rewards.append(obj)
         average_loss = total_loss / steps if steps > 0 else 0
         average_losses.append(average_loss)
-        step_rewards.append(episode_step_rewards)
 
         if episode % 10 == 0:
             agent.update_target()
-            # plot_metrics(total_rewards,average_losses,action_counts,episode)
-            print(f"Episode {episode}, Total Reward: {obj}, Average Loss: {average_loss}")
+            print(f"Episode {episode}, Total Reward: {obj}, Average Loss: {average_loss}, Exploration rate: {epsilon}")
 
     return total_rewards, average_losses
+
 
 
 # Define the search space of hyperparameters
@@ -314,27 +341,11 @@ search_space = [
     Real(0.01, 1.0, name="epsilon_end"),
     Real(0.90, 1.0, name="epsilon_decay"),
     Real(0.1, 0.6, name="dropout_rate"),
-    # 添加其他参数的范围
+    # Categorical(["random", "ucb", "softmax"], name="strategy"),  # 添加策略选择
+    Real(0.1, 1.0, name="ucb_c"),
+    Real(0.1, 10.0, name="softmax_temp")
 ]
 
-
-class HyperParams:
-    def __init__(self):
-        # 初始化所有需要优化的参数
-        self.num_episodes = 10000
-        self.learning_rate = 0.0001
-        self.batch_size = 128
-        self.gamma = 0.99
-        self.epsilon_start = 1.0
-        self.epsilon_end = 0.01
-        self.epsilon_decay = 0.95
-        self.dropout_rate = 0.5
-        # 可以添加更多参数
-
-    def update(self, **kwargs):
-        # 更新参数
-        for key, value in kwargs.items():
-            setattr(self, key, value)
 
 # Decorate the objective function to automatically convert named parameters
 @use_named_args(search_space)
@@ -348,10 +359,9 @@ def objective(**params):
     total_rewards, average_losses = train(env, agent, hyperparams)
     return -np.mean(total_rewards)
 
-
 # This function performs the search
 def search_params():
-    result = gp_minimize(objective, search_space, n_calls=10, random_state=0)
+    result = gp_minimize(objective, search_space, n_calls=20, random_state=0)
 
     # The result object will contain the information about the optimization
     best_hyperparams = result.x
@@ -360,6 +370,45 @@ def search_params():
     print("Best hyperparameters: {}\nBest score: {}".format(best_hyperparams, best_score))
     return best_hyperparams, best_score
 
+
+def test_model(env, agent, num_episodes):
+    total_rewards = []
+    total_times = []
+
+    for episode in range(num_episodes):
+        state = env.reset()
+        total_reward = 0
+        start_time = time.time()
+
+        while not env.is_done():
+            action = agent.select_action(state, env.available_actions, epsilon=0)  # 测试时不进行探索
+            next_state, reward, done = env.step(action)
+            state = next_state
+            total_reward += reward
+
+        end_time = time.time()
+        total_rewards.append(total_reward)
+        total_times.append(end_time - start_time)
+
+    average_reward = sum(total_rewards) / num_episodes
+    average_time = sum(total_times) / num_episodes
+    return average_reward, average_time
+
+
+def test_existing_model(file_path, num_episodes):
+    sensor_number = 15
+    weapon_number = 15
+    target_number = 10
+    sensors, weapons, targets = advanced_data_generator(sensor_number, weapon_number, target_number)
+    params = HyperParams()
+    env = MTADQNEnvironment(sensors, weapons, targets)
+    state_size = len(env.get_state())
+    action_size = env.n_sensors * env.n_weapons * env.n_targets
+    agent = DQNAgent(state_size, action_size, hyperparams)
+    agent.model.load_state_dict(torch.load(file_path))
+    average_reward, average_time = test_model(env, agent, num_episodes)
+    print("平均效用:", average_reward)
+    print("平均运行时间:", average_time, "秒")
 
 # 绘图函数
 def plot_metrics(total_rewards, average_losses, action_counts, episode):
@@ -406,6 +455,27 @@ def plot_results(total_rewards, average_losses):
     plt.tight_layout()
     plt.show()
 
+class HyperParams:
+    def __init__(self):
+        # 初始化所有需要优化的参数
+        self.num_episodes = 10000
+        self.learning_rate = 0.0001
+        self.batch_size = 128
+        self.gamma = 0.99
+        self.epsilon_start = 1.0
+        self.epsilon_end = 0.01
+        self.epsilon_decay = 0.95
+        self.dropout_rate = 0.55
+        self.strategy = 'random'
+        self.ucb_c = 0.1
+        self.softmax_temp = 0.1
+        self.early_stopping_threshold = 1000
+        # 可以添加更多参数
+
+    def update(self, **kwargs):
+        # 更新参数
+        for key, value in kwargs.items():
+            setattr(self, key, value)
 
 # 主函数
 if __name__ == "__main__":
@@ -418,10 +488,8 @@ if __name__ == "__main__":
     env = MTADQNEnvironment(sensors, weapons, targets)
     state_size = len(env.get_state())
     action_size = env.n_sensors * env.n_weapons * env.n_targets
-    agent = DQNAgent(state_size, action_size,hyperparams)
-
+    agent = DQNAgent(state_size, action_size, hyperparams)
+    # test_existing_model(file_path="dqn_checkpoint.pth", num_episodes=100)
     # search_params()
-
     total_rewards, average_losses = train(env, agent, hyperparams)
-    plot_results(total_rewards, average_losses)
 
